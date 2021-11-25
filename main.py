@@ -18,7 +18,7 @@ from utils import AudioDataset, emphasis
 class EarlyStopping:
     """주어진 patience 이후로 validation loss가 개선되지 않으면 학습을 조기 중지"""
 
-    def __init__(self, patience=7, verbose=False, delta=0, path='checkpoint.pt'):
+    def __init__(self, patience=7, verbose=False, delta=0):
         """
         Args:
             patience (int): validation loss가 개선된 후 기다리는 기간
@@ -37,7 +37,6 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
-        self.path = path
 
     def __call__(self, val_loss, model):
 
@@ -45,27 +44,17 @@ class EarlyStopping:
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
         elif score < self.best_score + self.delta:
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            print(f'Validation loss  ({self.val_loss_min:.6f} --> {val_loss:.6f}).')
+            print(f'Validation loss  ({self.val_loss_min:.4f} --> {val_loss:.4f}).')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
             self.counter = 0
 
-    def save_checkpoint(self, val_loss, model):
-        '''validation loss가 감소하면 모델을 저장한다.'''
-        if self.verbose:
-            print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        torch.save(model.state_dict(), self.path)
-        self.val_loss_min = val_loss
-
-        
-        
+       
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Audio Enhancement')
     parser.add_argument('--batch_size', default=50, type=int, help='train batch size')
@@ -79,10 +68,10 @@ if __name__ == '__main__':
     print('loading data...')
     train_dataset = AudioDataset(data_type='train')
     test_dataset = AudioDataset(data_type='test')
-    validation = 
+    validation = AudioDataset(data_type='validation')
     train_data_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     test_data_loader = DataLoader(dataset=test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
-    validation_data_loader = DataLoader(dataset=
+    validation_data_loader = DataLoader(dataset=validation_dataset, batch_size = BATCH_SIZE, shuffle=False, num_workers=4)
                                         
     # generate reference batch
     ref_batch = train_dataset.reference_batch(BATCH_SIZE)
@@ -148,7 +137,44 @@ if __name__ == '__main__':
             train_bar.set_description(
                 'Epoch {}: d_clean_loss {:.4f}, d_noisy_loss {:.4f}, g_loss {:.4f}, g_conditional_loss {:.4f}'
                     .format(epoch + 1, clean_loss.data[0], noisy_loss.data[0], g_loss.data[0], g_cond_loss.data[0]))
+        
+        # Early Stopping
+        early_stopping = EarlyStopping(patience=20, verbose=True)
+        early_stopping.counter = counter
+        valid_loss = []
+        
+        validation_bar = tqdm(validation_data_loader, desc = 'Data Validation')
+        for validation_batch, validation_clean, validation_noisy in validation_bar:
+            
+            z = nn.init.normal(torch.Tensor(validation_noisy.size(0), 1024, 8))
+            if torch.cuda.is_available():
+                validation_noisy, z = validation_noisy.cuda(), z.cuda()
+            validation_noisy, z = Variable(validation_noisy), Variable(z)      
+            generated_outputs = generator(validation_noisy, z)
+            
+            g_loss_ = 0.5 * torch.mean((outputs - 1.0) ** 2)
+            # L1 loss between generated output and clean sample
+            l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(validation_clean)))
+            g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
+            g_loss = g_loss_ + g_cond_loss
+            valid_loss.append(loss.cpu().detach().numpy())
+        
+        valid_loss = np.mean(np.array(valid_loss))
+        validation_bar.set_description(
+            'Epoch {} : validation_loss {:.4f}'
+                .format(epoch+1,valid_loss))
 
+        early_stopping(valid_loss, model)
+        
+        if early_stopping.early_stop:
+            print("")
+            print("Early Stopping")
+            g_path = os.path.join('epochs', 'Earlystop_generator-{}.pkl'.format(epoch + 1))
+            d_path = os.path.join('epochs', 'Earlystop_discriminator-{}.pkl'.format(epoch + 1))
+            
+            break
+            
+        
         # TEST model
         test_bar = tqdm(test_data_loader, desc='Test model and save generated audios')
         for test_file_names, test_noisy in test_bar:
