@@ -85,7 +85,5 @@ def data_verify(data_type):
 if __name__ == '__main__':
     process_and_serialize('train')
     data_verify('train')
-    process_and_serialize('validation')
-    data_verify('validation')
     process_and_serialize('test')
     data_verify('test')
