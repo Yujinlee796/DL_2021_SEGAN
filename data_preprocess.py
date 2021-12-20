@@ -10,6 +10,8 @@ clean_test_folder = 'data/clean_testset_wav'
 noisy_test_folder = 'data/noisy_testset_wav'
 serialized_train_folder = 'data/serialized_train_data'
 serialized_test_folder = 'data/serialized_test_data'
+serialized_validation_folder = 'data/serialized_validation_data'
+
 window_size = 2 ** 14  # about 1 second of samples
 sample_rate = 16000
 
@@ -69,8 +71,6 @@ def data_verify(data_type):
     """
     if data_type == 'train':
         serialized_folder = serialized_train_folder
-    else if data_type == 'validation':
-        serialized_folder = serialized_validation_folder
     else:
         serialized_folder = serialized_test_folder
 

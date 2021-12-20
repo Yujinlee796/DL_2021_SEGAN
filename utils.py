@@ -10,12 +10,10 @@ from data_preprocess import serialized_test_folder, serialized_train_folder, ser
 def emphasis(signal_batch, emph_coeff=0.95, pre=True):
     """
     Pre-emphasis or De-emphasis of higher frequencies given a batch of signal.
-
     Args:
         signal_batch: batch of signals, represented as numpy arrays
         emph_coeff: emphasis coefficient
         pre: pre-emphasis or de-emphasis signals
-
     Returns:
         result: pre-emphasized or de-emphasized signal batch
     """
@@ -38,7 +36,7 @@ class AudioDataset(data.Dataset):
 
         if data_type == 'train':
             data_path = serialized_train_folder
-        else if data_type == 'validation':
+        elif data_type == 'validation':
             data_path = serialized_validation_folder
         else:
             data_path = serialized_test_folder
@@ -52,10 +50,8 @@ class AudioDataset(data.Dataset):
         """
         Randomly selects a reference batch from dataset.
         Reference batch is used for calculating statistics for virtual batch normalization operation.
-
         Args:
             batch_size(int): batch size
-
         Returns:
             ref_batch: reference batch
         """
@@ -69,7 +65,7 @@ class AudioDataset(data.Dataset):
         pair = np.load(self.file_names[idx])
         pair = emphasis(pair[np.newaxis, :, :], emph_coeff=0.95).reshape(2, -1)
         noisy = pair[1].reshape(1, -1)
-        if ((self.data_type == 'train') || (self.data_type == 'validation')):
+        if ((self.data_type == 'train') or (self.data_type == 'validation')):
             clean = pair[0].reshape(1, -1)
             return torch.from_numpy(pair).type(torch.FloatTensor), torch.from_numpy(clean).type(
                 torch.FloatTensor), torch.from_numpy(noisy).type(torch.FloatTensor)            
