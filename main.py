@@ -1,15 +1,10 @@
 import argparse
 import os
-
+import torchaudio
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
-import torchaudio
-
-import librosa
-import librosa.display
-
+import csv
 from scipy.io import wavfile
 from torch import optim
 from torch.autograd import Variable
@@ -20,32 +15,36 @@ from data_preprocess import sample_rate
 from model import Generator, Discriminator
 from utils import AudioDataset, emphasis
 
+print ('torchaudio '+ torchaudio.__version__)
+print ('torch ' + torch.__version__)
+
 # Loss 2. Spectral Loss
-def SpectralLoss(x, target): 
+def SpectralLoss(x, target):
     '''
     output & target : tensor (Amplitude - time)
     outputSpec : Spectrogram of output tensor
     targetSpec : Spectrogram of target tensor
-    ''' 
+    '''
+    n_fft = 400     # Frequency length : n_fft/2+1
     outputSpec = torchaudio.transforms.Spectrogram(
-            power=None, window_fn=lambda x: torch.hann_window(400, device='cuda'))(x)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(x)
     targetSpec = torchaudio.transforms.Spectrogram(
-            power=None, window_fn=lambda x: torch.hann_window(400, device='cuda'))(target)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(target)
     gap = outputSpec - targetSpec
-    w, h, m, n = targetSpec.size()
-    loss = torch.sum(gap.pow(2))/(2*w*h)
+    n, _, w, h = targetSpec.size()
+    # w : frequency scale, h : time scale
 
+    loss = torch.abs(torch.sum(gap.pow(2))/(2*n*w*h))
     return loss
-
-
 
 # Loss 3. Frequency Cropped Loss
 def FreqCropLoss(x, target) :
     '''
     x, target : spectrogrammed data with librosa.stft & amplitude to db.
-    beta : weight array
+    beta & freq array : hyperparameters
+    - beta : weight array 
         (length : n+1; beta[0]=0 , for convenience of index)
-    freq : partition boundary frequency array
+    - freq : partition boundary frequency array 
         (length : n+1; freq[0]=0 & freq[n]=sampling rate, same reason with above)
 
     Default sampling rate of Librosa is 22050Hz -> so i set max Hz value as 11025Hz.
@@ -54,27 +53,31 @@ def FreqCropLoss(x, target) :
     freq = np.array([0, 400, 600, 1500, 3000, 11025])/11025
     partitions = len(freq)
 
+    n_fft = 400     # Frequency length : n_fft/2+1
     outputSpec = torchaudio.transforms.Spectrogram(
-            power=None, window_fn=lambda x: torch.hann_window(400, device='cuda'))(x)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(x)
     targetSpec = torchaudio.transforms.Spectrogram(
-            power=None, window_fn=lambda x: torch.hann_window(400, device='cuda'))(target)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(target)
     gap = outputSpec - targetSpec
-    w, h, m, n = targetSpec.size()
-    # w : time scale, h : freq scale
+    n, _, w, h = targetSpec.size()
+    # w : frequency scale, h : time scale
 
     loss = 0.
-    for k in range(1, partitions-1) :
+    for k in range(1, partitions) :
         l = 0.
-        start  = int(freq[k-1]*h)
-        finish = int(freq[k]*h)
+        start  = int(freq[k-1]*w) +1
+        if k==1 : start=0
+        finish = int(freq[k]*w)
 
+        lossmat = torch.sum(gap.pow(2), dim=3)
         for i in range(start, finish) :
-            l += torch.sum(gap.pow(2), dim=0)[i]/2
-        loss += torch.sum(l)*beta[k]/(finish-start)
-    return loss/w
+            l += torch.sum(lossmat, dim=0)[0][i]
+        loss += l*beta[k]
+    loss = torch.abs(loss)/(2*n*w*h)
+    return loss
 
 
-# https://quokkas.tistory.com/37
+# earlyStopping
 class EarlyStopping:
     """주어진 patience 이후로 validation loss가 개선되지 않으면 학습을 조기 중지"""
 
@@ -116,7 +119,9 @@ class EarlyStopping:
             self.counter = 0
             self.val_loss_min = val_loss
 
-       
+
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Audio Enhancement')
     parser.add_argument('--batch_size', default=50, type=int, help='train batch size')
@@ -133,8 +138,8 @@ if __name__ == '__main__':
     validation_dataset = AudioDataset(data_type='validation')
     train_data_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
     test_data_loader = DataLoader(dataset=test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
-    validation_data_loader = DataLoader(dataset=validation_dataset, batch_size = BATCH_SIZE, shuffle=False, num_workers=4)
-                                        
+    validation_data_loader = DataLoader(dataset=validation_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    
     # generate reference batch
     ref_batch = train_dataset.reference_batch(BATCH_SIZE)
 
@@ -142,19 +147,19 @@ if __name__ == '__main__':
     discriminator = Discriminator()
     generator = Generator()
     if torch.cuda.is_available():
-        discriminator.cuda()
-        generator.cuda()
-        ref_batch = ref_batch.cuda()
+        discriminator.to('cuda')
+        generator.to('cuda')
+        ref_batch = ref_batch.to('cuda')
     ref_batch = Variable(ref_batch)
     print("# generator parameters:", sum(param.numel() for param in generator.parameters()))
     print("# discriminator parameters:", sum(param.numel() for param in discriminator.parameters()))
     # optimizers
     g_optimizer = optim.RMSprop(generator.parameters(), lr=0.0001)
     d_optimizer = optim.RMSprop(discriminator.parameters(), lr=0.0001)
-    
+
     #initializing early stopping
     early_stopping = EarlyStopping(patience = 20, verbose = True)
-    
+
     for epoch in range(NUM_EPOCHS):
         train_bar = tqdm(train_data_loader)
         for train_batch, train_clean, train_noisy in train_bar:
@@ -189,18 +194,13 @@ if __name__ == '__main__':
             gen_noise_pair = torch.cat((generated_outputs, train_noisy), dim=1)
             outputs = discriminator(gen_noise_pair, ref_batch)
 
-            g_loss_ = 0.5 * torch.mean((outputs - 1.0) ** 2)
+            g_loss = 0.5 * torch.mean((outputs - 1.0) ** 2)
             # L1 loss between generated output and clean sample
             l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(train_clean)))
             g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
-            # original loss
-            # g_loss = g_loss_ + g_cond_loss
-            
-            # freqcroploss
-            g_loss = g_loss_ + g_cond_loss + 100*FreqCropLoss(generated_outputs, train_clean)
-
-            # spectralloss
-            # g_loss = g_loss_ + g_cond_loss + 0.0000005*SpectralLoss(generated_outputs, train_clean)
+            #g_loss = g_loss + g_cond_loss
+            #g_loss = g_loss + SpectralLoss(generated_outputs,train_clean)
+            g_loss = g_loss + g_cond_loss + FreqCropLoss(generated_outputs,train_clean)
 
             # backprop + optimize
             g_loss.backward()
@@ -227,17 +227,7 @@ if __name__ == '__main__':
             # L1 loss between generated output and clean sample
             l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(validation_clean)))
             g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
-            
-            # original loss
-            # g_loss = g_loss_ + g_cond_loss
-            
-            # freqcroploss
-            g_loss = g_loss_ + g_cond_loss + 100*FreqCropLoss(generated_outputs, validation_clean)
-
-            # spectralloss
-            # g_loss = g_loss_ + g_cond_loss + 0.0000005*SpectralLoss(generated_outputs, validation_clean)
-            
-            
+            g_loss = g_loss_ + g_cond_loss + FreqCropLoss(generated_outputs, validation_clean)
             valid_loss.append(g_loss.cpu().detach().numpy())
         
         valid_loss = np.mean(np.array(valid_loss))
@@ -254,8 +244,7 @@ if __name__ == '__main__':
             d_path = os.path.join('epochs', 'Earlystop_discriminator-{}.pkl'.format(epoch + 1))
             
             break
-            
-        
+
         # TEST model
         test_bar = tqdm(test_data_loader, desc='Test model and save generated audios')
         for test_file_names, test_noisy in test_bar:
