@@ -14,30 +14,36 @@ from data_preprocess import sample_rate
 from model import Generator, Discriminator
 from utils import AudioDataset, emphasis
 
+print ('torchaudio '+ torchaudio.__version__)
+print ('torch ' + torch.__version__)
+
 # Loss 2. Spectral Loss
-def SpectralLoss(x, target): 
+def SpectralLoss(x, target):
     '''
     output & target : tensor (Amplitude - time)
     outputSpec : Spectrogram of output tensor
     targetSpec : Spectrogram of target tensor
-    ''' 
+    '''
+    n_fft = 400     # Frequency length : n_fft/2+1
     outputSpec = torchaudio.transforms.Spectrogram(
-            power=2, window_fn=lambda x: torch.hann_window(400, device='cuda'))(x)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(x)
     targetSpec = torchaudio.transforms.Spectrogram(
-            power=2, window_fn=lambda x: torch.hann_window(400, device='cuda'))(target)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(target)
     gap = outputSpec - targetSpec
-    w, h, m, n = targetSpec.size()
-    loss = torch.abs(torch.sum(gap))/(2*w*h)
+    n, _, w, h = targetSpec.size()
+    # w : frequency scale, h : time scale
 
+    loss = torch.abs(torch.sum(gap.pow(2))/(2*n*w*h))
     return loss
 
 # Loss 3. Frequency Cropped Loss
 def FreqCropLoss(x, target) :
     '''
     x, target : spectrogrammed data with librosa.stft & amplitude to db.
-    beta : weight array
+    beta & freq array : hyperparameters
+    - beta : weight array 
         (length : n+1; beta[0]=0 , for convenience of index)
-    freq : partition boundary frequency array
+    - freq : partition boundary frequency array 
         (length : n+1; freq[0]=0 & freq[n]=sampling rate, same reason with above)
 
     Default sampling rate of Librosa is 22050Hz -> so i set max Hz value as 11025Hz.
@@ -46,24 +52,28 @@ def FreqCropLoss(x, target) :
     freq = np.array([0, 400, 600, 1500, 3000, 11025])/11025
     partitions = len(freq)
 
+    n_fft = 400     # Frequency length : n_fft/2+1
     outputSpec = torchaudio.transforms.Spectrogram(
-            power=2, window_fn=lambda x: torch.hann_window(400, device='cuda'))(x)
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(x)
     targetSpec = torchaudio.transforms.Spectrogram(
-            power=2, window_fn=lambda x: torch.hann_window(400, device='cuda'))(target)
-    gap = torch.abs(outputSpec - targetSpec)
-    w, h , m, n = targetSpec.size()
+            n_fft=n_fft, power=None, window_fn=lambda x: torch.hann_window(n_fft, device='cuda'))(target)
+    gap = outputSpec - targetSpec
+    n, _, w, h = targetSpec.size()
+    # w : frequency scale, h : time scale
 
     loss = 0.
-    for k in range(1, partitions-1) :
+    for k in range(1, partitions) :
         l = 0.
-        start  = int(freq[k-1]*h)
-        finish = int(freq[k]*h)
+        start  = int(freq[k-1]*w) +1
+        if k==1 : start=0
+        finish = int(freq[k]*w)
 
+        lossmat = torch.sum(gap.pow(2), dim=3)
         for i in range(start, finish) :
-            l += torch.sum(gap, dim=0)[i]/2
-        if(finish-start != 0) :
-            loss += l*beta[k]/(finish-start)
-    return loss/w
+            l += torch.sum(lossmat, dim=0)[0][i]
+        loss += l*beta[k]
+    loss = torch.abs(loss)/(2*n*w*h)
+    return loss
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Audio Enhancement')
@@ -136,8 +146,8 @@ if __name__ == '__main__':
             l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(train_clean)))
             g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
             #g_loss = g_loss + g_cond_loss
-            g_loss = g_loss + SpectralLoss(generated_outputs,train_clean)
-            #g_loss = g_loss + FreqCropLoss(generated_outputs,train_clean)
+            #g_loss = g_loss + SpectralLoss(generated_outputs,train_clean)
+            g_loss = g_loss + g_cond_loss + FreqCropLoss(generated_outputs,train_clean)
 
             # backprop + optimize
             g_loss.backward()
@@ -168,3 +178,4 @@ if __name__ == '__main__':
         d_path = os.path.join('epochs', 'discriminator-{}.pkl'.format(epoch + 1))
         torch.save(generator.state_dict(), g_path)
         torch.save(discriminator.state_dict(), d_path)
+
