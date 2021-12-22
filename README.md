@@ -44,4 +44,4 @@ optional arguments:
 The generated enhanced audio is on the same directory of input audio.
 
 ## Results
-The example results and the pre-train Generator weight can be downloaded from [BaiduYun](https://pan.baidu.com/s/1DrccLSyc9vPYsYambWkwPg)(access code:tzdd). 
+ Tensor board 
