@@ -157,6 +157,11 @@ if __name__ == '__main__':
     g_optimizer = optim.RMSprop(generator.parameters(), lr=0.0001)
     d_optimizer = optim.RMSprop(discriminator.parameters(), lr=0.0001)
 
+    #for loss plot
+    train_result_list = [['epoch','g_loss']]
+    val_result_list = [['epoch','loss']]
+
+
     #initializing early stopping
     early_stopping = EarlyStopping(patience = 20, verbose = True)
 
@@ -165,7 +170,7 @@ if __name__ == '__main__':
         for train_batch, train_clean, train_noisy in train_bar:
 
             # latent vector - normal distribution
-            z = nn.init.normal(torch.Tensor(train_batch.size(0), 1024, 8))
+            z = nn.init.normal_(torch.Tensor(train_batch.size(0), 1024, 8))
             if torch.cuda.is_available():
                 train_batch, train_clean, train_noisy = train_batch.cuda(), train_clean.cuda(), train_noisy.cuda()
                 z = z.cuda()
@@ -198,9 +203,9 @@ if __name__ == '__main__':
             # L1 loss between generated output and clean sample
             l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(train_clean)))
             g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
-            #g_loss = g_loss + g_cond_loss
+            g_loss = g_loss + g_cond_loss
             #g_loss = g_loss + SpectralLoss(generated_outputs,train_clean)
-            g_loss = g_loss + g_cond_loss + FreqCropLoss(generated_outputs,train_clean)
+            #g_loss = g_loss + g_cond_loss + FreqCropLoss(generated_outputs,train_clean)
 
             # backprop + optimize
             g_loss.backward()
@@ -209,14 +214,17 @@ if __name__ == '__main__':
             train_bar.set_description(
                 'Epoch {}: d_clean_loss {:.4f}, d_noisy_loss {:.4f}, g_loss {:.4f}, g_conditional_loss {:.4f}'
                     .format(epoch + 1, clean_loss.data, noisy_loss.data, g_loss.data, g_cond_loss.data))
-        
+            
+            #for loss plot
+            train_result_list.append([epoch, g_loss.cpu().detach().numpy()])
+
         # for valid loss and early Stopping
         valid_loss = []
         
         validation_bar = tqdm(validation_data_loader, desc = 'Data Validation')
         for validation_batch, validation_clean, validation_noisy in validation_bar:
             
-            z = nn.init.normal(torch.Tensor(validation_noisy.size(0), 1024, 8))
+            z = nn.init.normal_(torch.Tensor(validation_noisy.size(0), 1024, 8))
             if torch.cuda.is_available():
                 validation_noisy, z = validation_noisy.cuda(), z.cuda()
                 validation_clean = validation_clean.cuda()
@@ -227,7 +235,8 @@ if __name__ == '__main__':
             # L1 loss between generated output and clean sample
             l1_dist = torch.abs(torch.add(generated_outputs, torch.neg(validation_clean)))
             g_cond_loss = 100 * torch.mean(l1_dist)  # conditional loss
-            g_loss = g_loss_ + g_cond_loss + FreqCropLoss(generated_outputs, validation_clean)
+            g_loss = g_loss + g_cond_loss
+            #g_loss = g_loss_ + g_cond_loss + FreqCropLoss(generated_outputs, validation_clean)
             valid_loss.append(g_loss.cpu().detach().numpy())
         
         valid_loss = np.mean(np.array(valid_loss))
@@ -237,6 +246,9 @@ if __name__ == '__main__':
         print(valid_loss)
         early_stopping(valid_loss)
         
+        # for loss plot (211220)
+        val_result_list.append([epoch,valid_loss]) 
+
         if early_stopping.early_stop:
             print("")
             print("Early Stopping")
@@ -248,7 +260,7 @@ if __name__ == '__main__':
         # TEST model
         test_bar = tqdm(test_data_loader, desc='Test model and save generated audios')
         for test_file_names, test_noisy in test_bar:
-            z = nn.init.normal(torch.Tensor(test_noisy.size(0), 1024, 8))
+            z = nn.init.normal_(torch.Tensor(test_noisy.size(0), 1024, 8))
             if torch.cuda.is_available():
                 test_noisy, z = test_noisy.cuda(), z.cuda()
             test_noisy, z = Variable(test_noisy), Variable(z)
@@ -266,3 +278,13 @@ if __name__ == '__main__':
         d_path = os.path.join('epochs', 'discriminator-{}.pkl'.format(epoch + 1))
         torch.save(generator.state_dict(), g_path)
         torch.save(discriminator.state_dict(), d_path)
+
+    f =  open('train_result.csv','w')
+    writer = csv.writer(f)
+    writer.writerows(train_result_list)
+    f.close()
+
+    v = open('val_result.csv','w') 
+    writer = csv.writer(v) 
+    writer.writerows(val_result_list)
+    f.close()
